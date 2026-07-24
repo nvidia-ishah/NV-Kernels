@@ -1979,6 +1979,45 @@ static int genpd_add_device(struct generic_pm_domain *genpd, struct device *dev,
 }
 
 /**
+ * pm_genpd_add_device_with_base - Add a device to an I/O PM domain.
+ * @genpd: PM domain to add the device to.
+ * @dev: Device to be added.
+ * @base_dev: Physical device represented by @dev.
+ *
+ * Add @dev to @genpd while using @base_dev to derive the CPU identity for a
+ * CPU PM domain. For a CPU PM domain, @base_dev must be an actual CPU device.
+ * This is useful for a virtual consumer that represents that CPU in a domain
+ * hierarchy. Callers must keep one such ownership path per CPU through the
+ * hierarchy.
+ *
+ * @base_dev only needs to remain valid for this synchronous call. Genpd stores
+ * the resolved CPU number, not a pointer to @base_dev.
+ *
+ * Context: Sleepable. Takes the internal genpd list lock and the domain lock;
+ * callers must not hold either lock.
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int pm_genpd_add_device_with_base(struct generic_pm_domain *genpd,
+				  struct device *dev,
+				  struct device *base_dev)
+{
+	int ret;
+
+	if (!genpd || !dev || !base_dev)
+		return -EINVAL;
+	if (genpd_is_cpu_domain(genpd) && genpd_get_cpu(genpd, base_dev) < 0)
+		return -EINVAL;
+
+	mutex_lock(&gpd_list_lock);
+	ret = genpd_add_device(genpd, dev, base_dev);
+	mutex_unlock(&gpd_list_lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pm_genpd_add_device_with_base);
+
+/**
  * pm_genpd_add_device - Add a device to an I/O PM domain.
  * @genpd: PM domain to add the device to.
  * @dev: Device to be added.
