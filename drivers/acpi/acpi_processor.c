@@ -1044,12 +1044,23 @@ static void process_lpi_state_package(union acpi_object *lpi_pkg,
 		}
 
 		reg = (struct acpi_power_register *)obj->buffer.pointer;
-		if (reg->space_id != ACPI_ADR_SPACE_FIXED_HARDWARE) {
+		switch (reg->space_id) {
+		case ACPI_ADR_SPACE_FIXED_HARDWARE:
+			lpi_state->entry_method = ACPI_CSTATE_FFH;
+			break;
+		case ACPI_ADR_SPACE_SYSTEM_IO:
+			if (!IS_ENABLED(CONFIG_ACPI_PROCESSOR_CSTATE)) {
+				lpi_state_debug(handle, "Unsupported entry method",
+						state_idx);
+				return;
+			}
+			lpi_state->entry_method = ACPI_CSTATE_SYSTEMIO;
+			break;
+		default:
 			lpi_state_debug(handle, "Unsupported entry method", state_idx);
 			return;
 		}
 
-		lpi_state->entry_method = ACPI_CSTATE_FFH;
 		lpi_state->address = reg->address;
 	} else if (obj->type == ACPI_TYPE_INTEGER) {
 		lpi_state->entry_method = ACPI_CSTATE_INTEGER;

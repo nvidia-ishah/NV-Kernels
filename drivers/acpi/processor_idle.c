@@ -903,6 +903,13 @@ static int __cpuidle acpi_idle_lpi_enter(struct cpuidle_device *dev,
 		return -EINVAL;
 
 	lpi = &pr->power.lpi_states[index];
+#ifdef CONFIG_ACPI_PROCESSOR_CSTATE
+	if (lpi->entry_method == ACPI_CSTATE_SYSTEMIO) {
+		io_idle(lpi->address);
+		return index;
+	}
+#endif
+
 	if (lpi->entry_method == ACPI_CSTATE_FFH)
 		return acpi_processor_ffh_lpi_enter(lpi);
 
