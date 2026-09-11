@@ -1,0 +1,142 @@
+name: Update and Rebase
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to rebase (leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - linux-nvidia-6.6
+          - linux-nvidia-6.12
+          - linux-nvidia-6.18
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.branch }}" ]; then
+            branches='${{ inputs.branch }}'
+          else
+            branches='linux-nvidia-6.6 linux-nvidia-6.12 linux-nvidia-6.18'
+          fi
+
+          matrix='{"include":['
+          first=true
+          for branch in $branches; do
+            version=$(echo "$branch" | sed 's/^linux-nvidia-//')
+
+            # Query tags remotely without fetching
+            tag=$(git ls-remote --tags https://github.com/gregkh/linux.git "v${version}.*" | \
+                  grep -v '\^{}' | \
+                  sed 's|.*/||' | \
+                  sort -V | \
+                  tail -1)
+
+            if [ "$first" = true ]; then
+              first=false
+            else
+              matrix+=','
+            fi
+            matrix+="{\"branch\":\"$branch\",\"tag\":\"$tag\"}"
+          done
+          matrix+=']}'
+
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+
+  update-rebase-branch:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    outputs:
+      tag-6-6: ${{ steps.mark-success.outputs.tag-6-6 }}
+      tag-6-12: ${{ steps.mark-success.outputs.tag-6-12 }}
+      tag-6-18: ${{ steps.mark-success.outputs.tag-6-18 }}
+    steps:
+      - name: Check if already rebased to this tag
+        id: check-tag
+        run: |
+          if git ls-remote --tags https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git \
+               "refs/tags/${{ matrix.branch }}-${{ matrix.tag }}" | grep -q .; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "::notice::Tag ${{ matrix.branch }}-${{ matrix.tag }} already exists, skipping rebase"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout target branch
+        if: steps.check-tag.outputs.skip != 'true'
+        run: |
+          git init -q
+          git remote add origin https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+          git fetch origin ${{ matrix.branch }}
+          git checkout -b ${{ matrix.branch }} origin/${{ matrix.branch }}
+
+      - name: Fetch upstream tag
+        if: steps.check-tag.outputs.skip != 'true'
+        run: |
+          git remote add upstream https://github.com/gregkh/linux.git
+          git fetch upstream tag ${{ matrix.tag }} --no-tags
+
+      - name: Find merge base
+        if: steps.check-tag.outputs.skip != 'true'
+        id: merge_base
+        run: |
+          base=$(git merge-base HEAD ${{ matrix.tag }})
+          echo "base=$base" >> $GITHUB_OUTPUT
+
+      - name: Set git user identity
+        if: steps.check-tag.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase onto upstream tag
+        if: steps.check-tag.outputs.skip != 'true'
+        run: |
+          git rebase --onto ${{ matrix.tag }} ${{ steps.merge_base.outputs.base }}
+
+      - name: Create and push version tag
+        if: steps.check-tag.outputs.skip != 'true'
+        run: |
+          git tag -f ${{ matrix.branch }}-${{ matrix.tag }}
+          git push --force origin ${{ matrix.branch }}-${{ matrix.tag }}
+
+      - name: Mark rebase successful
+        if: steps.check-tag.outputs.skip != 'true'
+        id: mark-success
+        run: |
+          key=$(echo "${{ matrix.branch }}" | sed 's/linux-nvidia-/tag-/' | tr '.' '-')
+          echo "${key}=${{ matrix.branch }}-${{ matrix.tag }}" >> $GITHUB_OUTPUT
+
+  build-6-6:
+    needs: [prepare, update-rebase-branch]
+    if: ${{ !cancelled() && needs.update-rebase-branch.outputs.tag-6-6 != '' }}
+    uses: ./.github/workflows/kernel-build.yml
+    with:
+      build_ref: ${{ needs.update-rebase-branch.outputs.tag-6-6 }}
+
+  build-6-12:
+    needs: [prepare, update-rebase-branch]
+    if: ${{ !cancelled() && needs.update-rebase-branch.outputs.tag-6-12 != '' }}
+    uses: ./.github/workflows/kernel-build.yml
+    with:
+      build_ref: ${{ needs.update-rebase-branch.outputs.tag-6-12 }}
+
+  build-6-18:
+    needs: [prepare, update-rebase-branch]
+    if: ${{ !cancelled() && needs.update-rebase-branch.outputs.tag-6-18 != '' }}
+    uses: ./.github/workflows/kernel-build.yml
+    with:
+      build_ref: ${{ needs.update-rebase-branch.outputs.tag-6-18 }}
